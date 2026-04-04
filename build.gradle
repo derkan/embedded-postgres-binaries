@@ -14,6 +14,8 @@ ext {
     archNameParam = project.findProperty('archName') ?: ''
     distNameParam = project.findProperty('distName') ?: ''
     dockerImageParam = project.findProperty('dockerImage') ?: ''
+    freebsdImageUrlParam = project.findProperty('freebsdImageUrl') ?: ''
+    cacheDirParam = project.findProperty('cacheDir') ?: ''
     qemuPathParam = project.findProperty('qemuPath') ?: ''
 
     pgMajorVersionParam = (pgVersionParam =~ /(\d+).+/).with { matches() ? it[0][1].toInteger() : null }
@@ -48,11 +50,14 @@ task validateInputs {
         if (!project.version || project.version == 'unspecified') {
             throw new GradleException("The 'version' property must be set")
         }
-        if (distNameParam && distNameParam != 'alpine') {
-            throw new GradleException("Currently only the 'alpine' distribution is supported")
+        if (distNameParam && !(distNameParam in ['alpine', 'freebsd13'])) {
+            throw new GradleException("Currently only the 'alpine' and 'freebsd13' distributions are supported")
         }
         if (archNameParam && !(archNameParam ==~ /^[a-z0-9]+$/)) {
             throw new GradleException("The 'archName' property must contain only alphanumeric characters")
+        }
+        if (distNameParam == 'freebsd13' && archNameParam && archNameParam != 'amd64') {
+            throw new GradleException("Currently only the 'amd64' architecture is supported for the 'freebsd13' distribution")
         }
     }
 }
@@ -419,6 +424,76 @@ alpineVariants.each { variant ->
     }
 }
 
+project(':custom-freebsd-platform') {
+    if (distNameParam == 'freebsd13') {
+        def archName = archNameParam ?: 'amd64'
+
+        task buildCustomFreebsdBundle(group: 'build (custom)', type: LazyExec, dependsOn: validateInputs) {
+            def dockerImage = { dockerImageParam ?: defaultFreebsdBuilderImage() }
+            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsd13ImageUrl() }
+            def cacheDir = { cacheDirParam ?: "${rootDir}/.cache/freebsd-builder" }
+
+            doFirst {
+                println "archName:        $archName"
+                println "distName:        freebsd13"
+                println "dockerImage:     ${dockerImage()}"
+                println "freebsdImageUrl: ${freebsdImageUrl()}"
+                println "cacheDir:        ${cacheDir()}"
+                println ''
+            }
+
+            inputs.property('pgVersion', pgVersionParam)
+            inputs.property('archName', archName)
+            inputs.property('dockerImage', dockerImage)
+            inputs.property('freebsdImageUrl', freebsdImageUrl)
+            inputs.property('cacheDir', cacheDir)
+
+            inputs.file("$rootDir/scripts/build-postgres-freebsd.sh")
+            inputs.file("$rootDir/scripts/build-postgres-freebsd-guest.sh")
+            outputs.dir("$temporaryDir/bundle")
+
+            workingDir temporaryDir
+            commandLine 'sh', "$rootDir/scripts/build-postgres-freebsd.sh",
+                    '-v', "$pgVersionParam",
+                    '-i', dockerImage,
+                    '-u', freebsdImageUrl,
+                    '-k', cacheDir
+        }
+
+        task customFreebsdJar(group: 'build (custom)', type: Jar) {
+            from buildCustomFreebsdBundle
+            include "postgres-freebsd13-${normalizeArchName(archName)}.txz"
+            appendix = "freebsd13-${archName}"
+        }
+
+        task testCustomFreebsdJar(group: 'build (custom)', type: LazyExec, dependsOn: [validateInputs, customFreebsdJar]) {
+            def dockerImage = { dockerImageParam ?: defaultFreebsdBuilderImage() }
+            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsd13ImageUrl() }
+            def cacheDir = { cacheDirParam ?: "${rootDir}/.cache/freebsd-builder" }
+
+            inputs.property('pgVersion', pgVersionParam)
+            inputs.property('archName', archName)
+            inputs.property('dockerImage', dockerImage)
+            inputs.property('freebsdImageUrl', freebsdImageUrl)
+            inputs.property('cacheDir', cacheDir)
+
+            inputs.file("$rootDir/scripts/test-postgres-freebsd.sh")
+            inputs.file("$rootDir/scripts/test-postgres-freebsd-guest.sh")
+
+            workingDir customFreebsdJar.destinationDirectory
+            commandLine 'sh', "$rootDir/scripts/test-postgres-freebsd.sh",
+                    '-j', "embedded-postgres-binaries-freebsd13-${archName}-${version}.jar",
+                    '-z', "postgres-freebsd13-${normalizeArchName(archName)}.txz",
+                    '-i', dockerImage,
+                    '-u', freebsdImageUrl,
+                    '-v', "$pgVersionParam",
+                    '-k', cacheDir
+        }
+
+        artifacts.add('bundles', tasks.getByName('customFreebsdJar'))
+    }
+}
+
 subprojects {
     task sourcesJar(type: Jar, dependsOn: classes) {
         from sourceSets.main.allSource
@@ -611,6 +686,14 @@ static def defaultAlpineImage(archName, useEmulation) {
     } else {
         throw new GradleException("Cross-building is not supported on the current platform: $system")
     }
+}
+
+static def defaultFreebsdBuilderImage() {
+    return 'ubuntu:24.04'
+}
+
+static def defaultFreebsd13ImageUrl() {
+    return 'https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/13.5/FreeBSD-13.5-RELEASE-amd64-disc1.iso.xz'
 }
 
 static def normalizeArchName(String input) {
