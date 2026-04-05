@@ -56,6 +56,19 @@ copy_runtime_file() {
     fi
 }
 
+should_bundle_system_lib() {
+    dep_path="$1"
+
+    case "$dep_path" in
+        /usr/lib/libssl.so.*|/lib/libcrypto.so.*)
+            return 0
+            ;;
+        *)
+            return 1
+            ;;
+    esac
+}
+
 case "$PG_VERSION" in
     9.*) ICU_ENABLED=false ;;
     *) ICU_ENABLED=true ;;
@@ -173,6 +186,12 @@ collect_deps() {
             /usr/local/*)
                 copy_runtime_file "$dep_path" "$RUNTIME_LIB_DIR"
                 collect_deps "$dep_path"
+                ;;
+            *)
+                if should_bundle_system_lib "$dep_path"; then
+                    copy_runtime_file "$dep_path" "$RUNTIME_LIB_DIR"
+                    collect_deps "$dep_path"
+                fi
                 ;;
         esac
     done < "$deps_file"
