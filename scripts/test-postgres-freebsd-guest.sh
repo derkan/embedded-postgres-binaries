@@ -39,25 +39,29 @@ unzip -q -d "$TEST_ROOT/pg-dist" "$JAR_FILE"
 mkdir -p "$TEST_ROOT/pg-test/data"
 tar -xJf "$TEST_ROOT/pg-dist/$ZIP_FILE" -C "$TEST_ROOT/pg-test"
 chmod 755 "$TEST_ROOT/pg-test/bin/initdb" "$TEST_ROOT/pg-test/bin/pg_ctl" "$TEST_ROOT/pg-test/bin/postgres"
-for bundled_lib in "$TEST_ROOT"/pg-test/lib/*.so*; do
-    [ -e "$bundled_lib" ] || continue
-    cp -pP "$bundled_lib" /usr/local/lib/
-done
+ICU_DATA_DIR=
+ICU_DATA_PATH=
 if [ -d "$TEST_ROOT/pg-test/share/icu" ]; then
     mkdir -p /usr/local/share
+    rm -rf /usr/local/share/icu
     cp -Rp "$TEST_ROOT/pg-test/share/icu" /usr/local/share/
-fi
-ICU_DATA_DIR=
-if [ -d "$TEST_ROOT/pg-test/share/icu" ]; then
     ICU_DATA_DIR="$(find "$TEST_ROOT/pg-test/share/icu" -mindepth 1 -maxdepth 1 -type d | sort | head -n 1)"
 fi
 if [ -n "$ICU_DATA_DIR" ]; then
-    PG_ENV="env LD_LIBRARY_PATH=$TEST_ROOT/pg-test/lib:/usr/local/lib ICU_DATA=$ICU_DATA_DIR"
-else
-    PG_ENV="env LD_LIBRARY_PATH=$TEST_ROOT/pg-test/lib:/usr/local/lib"
+    ICU_DATA_PATH="$(find "$ICU_DATA_DIR" -maxdepth 1 -type f -name 'icudt*.dat' | sort | head -n 1)"
 fi
-ldconfig -m "$TEST_ROOT/pg-test/lib"
-ldconfig -m /usr/local/lib
+PG_ENV="env"
+
+echo "FreeBSD ICU debug:" >&2
+echo "  ICU_DATA_DIR=${ICU_DATA_DIR:-<unset>}" >&2
+echo "  ICU_DATA_PATH=${ICU_DATA_PATH:-<unset>}" >&2
+echo "  PG_ENV=$PG_ENV" >&2
+if [ -d "$TEST_ROOT/pg-test/share/icu" ]; then
+    find "$TEST_ROOT/pg-test/share/icu" -maxdepth 2 \( -type d -o -type f \) | sort >&2
+fi
+if [ -d /usr/local/share/icu ]; then
+    find /usr/local/share/icu -maxdepth 2 \( -type d -o -type f \) | sort >&2
+fi
 
 pw groupshow "$TEST_USER" >/dev/null 2>&1 || pw useradd "$TEST_USER" -m -s /bin/sh
 chown -R "$TEST_USER:$TEST_USER" "$TEST_ROOT"
