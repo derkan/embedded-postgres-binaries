@@ -44,10 +44,10 @@ fi
 PROVISION_MODE=
 if echo "$VM_IMAGE_URL" | grep -q 'BASIC-CLOUDINIT'; then
   PROVISION_MODE=cloudinit
-elif echo "$VM_IMAGE_URL" | grep -Eq 'disc1\.iso(\.xz)?$'; then
-  PROVISION_MODE=installer
+elif echo "$VM_IMAGE_URL" | grep -Eq '(disc1|dvd1)\.iso(\.xz)?$'; then
+    PROVISION_MODE=installer
 else
-  echo "FreeBSD VM image URL must point to either a BASIC-CLOUDINIT image or a release disc1.iso installer image." && exit 1;
+  echo "FreeBSD VM image URL must point to either a BASIC-CLOUDINIT image or a release disc1.iso/dvd1.iso installer image." && exit 1;
 fi
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -199,7 +199,7 @@ local-hostname: embedded-postgres-freebsd
 EOF
 
             cat > "$WORK_DIR/seed/user-data" <<EOF
-#!cloud-config
+#cloud-config
 packages:
   - opendoas
 users:
@@ -317,6 +317,10 @@ log_file -a "$WORK_DIR/serial.log"
 spawn nc 127.0.0.1 $SERIAL_PORT
 expect {
     -re {Console type \\[vt100\\]:[ ]*} {
+        send "\\r"
+        exp_continue
+    }
+    -re {Mirror Selection|Select a site!} {
         send "\\r"
         exp_continue
     }

@@ -41,8 +41,13 @@ if [ -z "${BUNDLE_FILE:-}" ] ; then
   echo "FreeBSD postgres bundle parameter is required!" && exit 1;
 fi
 
-if ! echo "$VM_IMAGE_URL" | grep -Eq 'disc1\.iso(\.xz)?$'; then
-  echo "FreeBSD VM image URL must point to a release disc1.iso installer image." && exit 1;
+PROVISION_MODE=
+if echo "$VM_IMAGE_URL" | grep -q 'BASIC-CLOUDINIT'; then
+  PROVISION_MODE=cloudinit
+elif echo "$VM_IMAGE_URL" | grep -Eq '(disc1|dvd1)\.iso(\.xz)?$'; then
+  PROVISION_MODE=installer
+else
+  echo "FreeBSD VM image URL must point to either a BASIC-CLOUDINIT image or a release disc1.iso/dvd1.iso installer image." && exit 1;
 fi
 
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
@@ -76,6 +81,7 @@ docker run -i --rm \
     -e VM_MEMORY_MB="$VM_MEMORY_MB" \
     -e VM_CPUS="$VM_CPUS" \
     -e VM_DISK_SIZE="$VM_DISK_SIZE" \
+    -e PROVISION_MODE="$PROVISION_MODE" \
     -e SSH_PORT="$SSH_PORT" \
     -e SERIAL_PORT="$SERIAL_PORT" \
     -e BUNDLE_HOST_BASENAME="$BUNDLE_HOST_BASENAME" \
@@ -148,22 +154,101 @@ docker run -i --rm \
             QEMU_CPU=qemu64
         fi
 
-        mkdir -p "$WORK_DIR/install-media/etc" "$WORK_DIR/install-media/boot"
         VM_CACHE_BASENAME=$(basename "$VM_IMAGE_URL")
         if [ ! -f "/usr/local/pg-cache/${VM_CACHE_BASENAME}" ]; then
-            log "Downloading FreeBSD installer ISO from $VM_IMAGE_URL"
+            if [ "$PROVISION_MODE" = cloudinit ]; then
+                log "Downloading FreeBSD cloud image from $VM_IMAGE_URL"
+            else
+                log "Downloading FreeBSD installer ISO from $VM_IMAGE_URL"
+            fi
             curl -fsSL "$VM_IMAGE_URL" -o "/usr/local/pg-cache/${VM_CACHE_BASENAME}"
         else
-            log "Using cached FreeBSD installer ISO ${VM_CACHE_BASENAME}"
-        fi
-        if echo "$VM_IMAGE_URL" | grep -q "\.xz$"; then
-            log "Decompressing FreeBSD installer ISO"
-            xz -dc "/usr/local/pg-cache/${VM_CACHE_BASENAME}" > "$WORK_DIR/freebsd-installer.iso"
-        else
-            cp "/usr/local/pg-cache/${VM_CACHE_BASENAME}" "$WORK_DIR/freebsd-installer.iso"
+            if [ "$PROVISION_MODE" = cloudinit ]; then
+                log "Using cached FreeBSD cloud image ${VM_CACHE_BASENAME}"
+            else
+                log "Using cached FreeBSD installer ISO ${VM_CACHE_BASENAME}"
+            fi
         fi
 
-        cat > "$WORK_DIR/install-media/etc/installerconfig" <<EOF
+        if [ "$PROVISION_MODE" = cloudinit ]; then
+            mkdir -p "$WORK_DIR/seed"
+            if echo "$VM_IMAGE_URL" | grep -q "\.xz$"; then
+                log "Decompressing FreeBSD cloud image"
+                xz -dc "/usr/local/pg-cache/${VM_CACHE_BASENAME}" > "$WORK_DIR/freebsd-base.qcow2"
+            else
+                cp "/usr/local/pg-cache/${VM_CACHE_BASENAME}" "$WORK_DIR/freebsd-base.qcow2"
+            fi
+
+            log "Creating writable overlay"
+            qemu-img create -q -f qcow2 -F qcow2 -b "$WORK_DIR/freebsd-base.qcow2" "$WORK_DIR/freebsd-overlay.qcow2"
+
+            cat > "$WORK_DIR/seed/meta-data" <<EOF
+instance-id: embedded-postgres-test
+local-hostname: embedded-postgres-freebsd-test
+EOF
+
+            cat > "$WORK_DIR/seed/user-data" <<EOF
+#cloud-config
+packages:
+  - opendoas
+users:
+  - default
+  - name: builder
+    gecos: Embedded Postgres Tester
+    groups:
+      - wheel
+    shell: /bin/sh
+    ssh_authorized_keys:
+      - $(cat "$WORK_DIR/id_ed25519.pub")
+    doas: "permit nopass %u as root"
+EOF
+
+            xorriso -as mkisofs \
+                -quiet \
+                -o "$WORK_DIR/seed.iso" \
+                -V cidata \
+                -J \
+                -R \
+                "$WORK_DIR/seed/meta-data" \
+                "$WORK_DIR/seed/user-data"
+
+            log "Starting FreeBSD cloud guest with QEMU accel=$QEMU_ACCEL memory=${VM_MEMORY_MB}MB cpus=$VM_CPUS ssh_port=$SSH_PORT"
+            qemu-system-x86_64 \
+                -daemonize \
+                -display none \
+                -monitor none \
+                -pidfile "$WORK_DIR/qemu.pid" \
+                -serial "file:$WORK_DIR/serial.log" \
+                -machine "q35,accel=$QEMU_ACCEL" \
+                -cpu "$QEMU_CPU" \
+                -m "$VM_MEMORY_MB" \
+                -smp "$VM_CPUS" \
+                -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" \
+                -device e1000,netdev=net0 \
+                -drive "if=virtio,format=qcow2,file=$WORK_DIR/freebsd-overlay.qcow2" \
+                -drive "if=virtio,media=cdrom,readonly=on,file=$WORK_DIR/seed.iso"
+
+            wait_for_ssh builder 180
+            log "Waiting for opendoas inside guest"
+            ssh $SSH_OPTS builder@127.0.0.1 "while [ ! -x /usr/local/bin/doas ]; do sleep 2; done"
+
+            log "Copying embedded-postgres repo, bundle and guest helper"
+            tar -C /usr/local/src -cf - embedded-postgres | ssh $SSH_OPTS builder@127.0.0.1 "mkdir -p /tmp && tar -xf - -C /tmp"
+            scp $SCP_OPTS "/usr/local/pg-bundle/${BUNDLE_HOST_BASENAME}" builder@127.0.0.1:/tmp/"${BUNDLE_HOST_BASENAME}"
+            scp $SCP_OPTS /usr/local/pg-scripts/test-embedded-postgres-freebsd-guest.sh builder@127.0.0.1:/tmp/test-embedded-postgres-freebsd-guest.sh
+
+            log "Running embedded-postgres examples inside FreeBSD guest"
+            ssh $SSH_OPTS builder@127.0.0.1 "chmod +x /tmp/test-embedded-postgres-freebsd-guest.sh && doas env BUNDLE_FILE=/tmp/${BUNDLE_HOST_BASENAME} REPO_DIR=/tmp/embedded-postgres /tmp/test-embedded-postgres-freebsd-guest.sh"
+        else
+            mkdir -p "$WORK_DIR/install-media/etc" "$WORK_DIR/install-media/boot"
+            if echo "$VM_IMAGE_URL" | grep -q "\.xz$"; then
+                log "Decompressing FreeBSD installer ISO"
+                xz -dc "/usr/local/pg-cache/${VM_CACHE_BASENAME}" > "$WORK_DIR/freebsd-installer.iso"
+            else
+                cp "/usr/local/pg-cache/${VM_CACHE_BASENAME}" "$WORK_DIR/freebsd-installer.iso"
+            fi
+
+            cat > "$WORK_DIR/install-media/etc/installerconfig" <<EOF
 export nonInteractive=YES
 PARTITIONS=DEFAULT
 DISTRIBUTIONS="kernel.txz base.txz"
@@ -189,30 +274,30 @@ LOADERCONFEOF
 printf "\nPermitRootLogin yes\nPasswordAuthentication no\nChallengeResponseAuthentication no\n" >> /etc/ssh/sshd_config
 EOF
 
-        cat > "$WORK_DIR/install-media/boot.config" <<EOF
+            cat > "$WORK_DIR/install-media/boot.config" <<EOF
 -Dh
 EOF
 
-        cat > "$WORK_DIR/install-media/boot/loader.conf" <<EOF
+            cat > "$WORK_DIR/install-media/boot/loader.conf" <<EOF
 console="comconsole,vidconsole"
 boot_multicons="YES"
 autoboot_delay="1"
 EOF
 
-        log "Embedding unattended installer configuration into FreeBSD installer ISO"
-        xorriso \
-            -indev "$WORK_DIR/freebsd-installer.iso" \
-            -outdev "$WORK_DIR/freebsd-installer-auto.iso" \
-            -map "$WORK_DIR/install-media/etc/installerconfig" /etc/installerconfig \
-            -map "$WORK_DIR/install-media/boot.config" /boot.config \
-            -map "$WORK_DIR/install-media/boot/loader.conf" /boot/loader.conf \
-            -boot_image any keep \
-            -compliance no_emul_toc
+            log "Embedding unattended installer configuration into FreeBSD installer ISO"
+            xorriso \
+                -indev "$WORK_DIR/freebsd-installer.iso" \
+                -outdev "$WORK_DIR/freebsd-installer-auto.iso" \
+                -map "$WORK_DIR/install-media/etc/installerconfig" /etc/installerconfig \
+                -map "$WORK_DIR/install-media/boot.config" /boot.config \
+                -map "$WORK_DIR/install-media/boot/loader.conf" /boot/loader.conf \
+                -boot_image any keep \
+                -compliance no_emul_toc
 
-        log "Creating target disk image of size $VM_DISK_SIZE"
-        qemu-img create -q -f qcow2 "$WORK_DIR/freebsd-system.qcow2" "$VM_DISK_SIZE"
+            log "Creating target disk image of size $VM_DISK_SIZE"
+            qemu-img create -q -f qcow2 "$WORK_DIR/freebsd-system.qcow2" "$VM_DISK_SIZE"
 
-        cat > "$WORK_DIR/drive-serial.expect" <<EOF
+            cat > "$WORK_DIR/drive-serial.expect" <<EOF
 #!/usr/bin/expect -f
 log_user 0
 set timeout -1
@@ -223,42 +308,47 @@ expect {
         send "\\r"
         exp_continue
     }
+    -re {Mirror Selection|Select a site!} {
+        send "\\r"
+        exp_continue
+    }
     eof {
         exit 0
     }
 }
 EOF
-        chmod +x "$WORK_DIR/drive-serial.expect"
+            chmod +x "$WORK_DIR/drive-serial.expect"
 
-        log "Starting FreeBSD installer guest with QEMU accel=$QEMU_ACCEL memory=${VM_MEMORY_MB}MB cpus=$VM_CPUS ssh_port=$SSH_PORT"
-        qemu-system-x86_64 \
-            -daemonize \
-            -display none \
-            -monitor none \
-            -pidfile "$WORK_DIR/qemu.pid" \
-            -machine "q35,accel=$QEMU_ACCEL" \
-            -cpu "$QEMU_CPU" \
-            -m "$VM_MEMORY_MB" \
-            -smp "$VM_CPUS" \
-            -boot once=d \
-            -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" \
-            -device e1000,netdev=net0 \
-            -serial "tcp:127.0.0.1:${SERIAL_PORT},server,nowait" \
-            -drive "if=virtio,format=qcow2,file=$WORK_DIR/freebsd-system.qcow2" \
-            -cdrom "$WORK_DIR/freebsd-installer-auto.iso"
+            log "Starting FreeBSD installer guest with QEMU accel=$QEMU_ACCEL memory=${VM_MEMORY_MB}MB cpus=$VM_CPUS ssh_port=$SSH_PORT"
+            qemu-system-x86_64 \
+                -daemonize \
+                -display none \
+                -monitor none \
+                -pidfile "$WORK_DIR/qemu.pid" \
+                -machine "q35,accel=$QEMU_ACCEL" \
+                -cpu "$QEMU_CPU" \
+                -m "$VM_MEMORY_MB" \
+                -smp "$VM_CPUS" \
+                -boot once=d \
+                -netdev "user,id=net0,hostfwd=tcp::${SSH_PORT}-:22" \
+                -device e1000,netdev=net0 \
+                -serial "tcp:127.0.0.1:${SERIAL_PORT},server,nowait" \
+                -drive "if=virtio,format=qcow2,file=$WORK_DIR/freebsd-system.qcow2" \
+                -cdrom "$WORK_DIR/freebsd-installer-auto.iso"
 
-        "$WORK_DIR/drive-serial.expect" &
-        echo $! > "$WORK_DIR/serial-driver.pid"
+            "$WORK_DIR/drive-serial.expect" &
+            echo $! > "$WORK_DIR/serial-driver.pid"
 
-        wait_for_ssh root 360
+            wait_for_ssh root 360
 
-        log "Copying embedded-postgres repo, bundle and guest helper"
-        tar -C /usr/local/src -cf - embedded-postgres | ssh $SSH_OPTS root@127.0.0.1 "mkdir -p /var/tmp && tar -xf - -C /var/tmp"
-        scp $SCP_OPTS "/usr/local/pg-bundle/${BUNDLE_HOST_BASENAME}" root@127.0.0.1:/tmp/"${BUNDLE_HOST_BASENAME}"
-        scp $SCP_OPTS /usr/local/pg-scripts/test-embedded-postgres-freebsd-guest.sh root@127.0.0.1:/tmp/test-embedded-postgres-freebsd-guest.sh
+            log "Copying embedded-postgres repo, bundle and guest helper"
+            tar -C /usr/local/src -cf - embedded-postgres | ssh $SSH_OPTS root@127.0.0.1 "mkdir -p /var/tmp && tar -xf - -C /var/tmp"
+            scp $SCP_OPTS "/usr/local/pg-bundle/${BUNDLE_HOST_BASENAME}" root@127.0.0.1:/tmp/"${BUNDLE_HOST_BASENAME}"
+            scp $SCP_OPTS /usr/local/pg-scripts/test-embedded-postgres-freebsd-guest.sh root@127.0.0.1:/tmp/test-embedded-postgres-freebsd-guest.sh
 
-        log "Running embedded-postgres examples inside FreeBSD guest"
-        ssh $SSH_OPTS root@127.0.0.1 "chmod +x /tmp/test-embedded-postgres-freebsd-guest.sh && env BUNDLE_FILE=/tmp/${BUNDLE_HOST_BASENAME} REPO_DIR=/var/tmp/embedded-postgres /tmp/test-embedded-postgres-freebsd-guest.sh"
+            log "Running embedded-postgres examples inside FreeBSD guest"
+            ssh $SSH_OPTS root@127.0.0.1 "chmod +x /tmp/test-embedded-postgres-freebsd-guest.sh && env BUNDLE_FILE=/tmp/${BUNDLE_HOST_BASENAME} REPO_DIR=/var/tmp/embedded-postgres /tmp/test-embedded-postgres-freebsd-guest.sh"
+        fi
 
         log "embedded-postgres FreeBSD example test completed"
     '
