@@ -50,14 +50,22 @@ task validateInputs {
         if (!project.version || project.version == 'unspecified') {
             throw new GradleException("The 'version' property must be set")
         }
-        if (distNameParam && !(distNameParam in ['alpine', 'freebsd13'])) {
-            throw new GradleException("Currently only the 'alpine' and 'freebsd13' distributions are supported")
+        if (distNameParam && !(distNameParam in ['alpine', 'freebsd13', 'freebsd14'])) {
+            throw new GradleException("Currently only the 'alpine', 'freebsd13' and 'freebsd14' distributions are supported")
         }
         if (archNameParam && !(archNameParam ==~ /^[a-z0-9]+$/)) {
             throw new GradleException("The 'archName' property must contain only alphanumeric characters")
         }
-        if (distNameParam == 'freebsd13' && archNameParam && archNameParam != 'amd64') {
-            throw new GradleException("Currently only the 'amd64' architecture is supported for the 'freebsd13' distribution")
+        if ((distNameParam in ['freebsd13', 'freebsd14']) && archNameParam && archNameParam != 'amd64') {
+            throw new GradleException("Currently only the 'amd64' architecture is supported for FreeBSD distributions")
+        }
+
+        if (distNameParam in ['freebsd13', 'freebsd14'] && freebsdImageUrlParam) {
+            def expectedMajor = extractFreebsdMajorFromDistName(distNameParam)
+            def actualMajor = extractFreebsdMajorFromImageUrl(freebsdImageUrlParam)
+            if (actualMajor != null && actualMajor != expectedMajor) {
+                throw new GradleException("The configured FreeBSD image URL targets major version ${actualMajor}, but distName=${distNameParam} expects FreeBSD ${expectedMajor}")
+            }
         }
     }
 }
@@ -425,17 +433,19 @@ alpineVariants.each { variant ->
 }
 
 project(':custom-freebsd-platform') {
-    if (distNameParam == 'freebsd13') {
+    if (distNameParam in ['freebsd13', 'freebsd14']) {
         def archName = archNameParam ?: 'amd64'
+        def freebsdDistName = distNameParam
+        def freebsdMajor = extractFreebsdMajorFromDistName(freebsdDistName)
 
         task buildCustomFreebsdBundle(group: 'build (custom)', type: LazyExec, dependsOn: validateInputs) {
             def dockerImage = { dockerImageParam ?: defaultFreebsdBuilderImage() }
-            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsd13ImageUrl() }
+            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsdImageUrl(freebsdMajor) }
             def cacheDir = { cacheDirParam ?: "${rootDir}/.cache/freebsd-builder" }
 
             doFirst {
                 println "archName:        $archName"
-                println "distName:        freebsd13"
+                println "distName:        $freebsdDistName"
                 println "dockerImage:     ${dockerImage()}"
                 println "freebsdImageUrl: ${freebsdImageUrl()}"
                 println "cacheDir:        ${cacheDir()}"
@@ -462,13 +472,13 @@ project(':custom-freebsd-platform') {
 
         task customFreebsdJar(group: 'build (custom)', type: Jar) {
             from buildCustomFreebsdBundle
-            include "postgres-freebsd13-${normalizeArchName(archName)}.txz"
-            appendix = "freebsd13-${archName}"
+            include "postgres-${freebsdDistName}-${normalizeArchName(archName)}.txz"
+            appendix = "${freebsdDistName}-${archName}"
         }
 
         task testCustomFreebsdJar(group: 'build (custom)', type: LazyExec, dependsOn: [validateInputs, customFreebsdJar]) {
             def dockerImage = { dockerImageParam ?: defaultFreebsdBuilderImage() }
-            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsd13ImageUrl() }
+            def freebsdImageUrl = { freebsdImageUrlParam ?: defaultFreebsdImageUrl(freebsdMajor) }
             def cacheDir = { cacheDirParam ?: "${rootDir}/.cache/freebsd-builder" }
 
             inputs.property('pgVersion', pgVersionParam)
@@ -482,8 +492,8 @@ project(':custom-freebsd-platform') {
 
             workingDir customFreebsdJar.destinationDirectory
             commandLine 'sh', "$rootDir/scripts/test-postgres-freebsd.sh",
-                    '-j', "embedded-postgres-binaries-freebsd13-${archName}-${version}.jar",
-                    '-z', "postgres-freebsd13-${normalizeArchName(archName)}.txz",
+                    '-j', "embedded-postgres-binaries-${freebsdDistName}-${archName}-${version}.jar",
+                    '-z', "postgres-${freebsdDistName}-${normalizeArchName(archName)}.txz",
                     '-i', dockerImage,
                     '-u', freebsdImageUrl,
                     '-v', "$pgVersionParam",
@@ -692,8 +702,33 @@ static def defaultFreebsdBuilderImage() {
     return 'ubuntu:24.04'
 }
 
+static def defaultFreebsdImageUrl(int majorVersion) {
+    switch (majorVersion) {
+        case 13:
+            return defaultFreebsd13ImageUrl()
+        case 14:
+            return defaultFreebsd14ImageUrl()
+        default:
+            throw new GradleException("No default FreeBSD image URL is defined for major version ${majorVersion}")
+    }
+}
+
 static def defaultFreebsd13ImageUrl() {
     return 'https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/13.5/FreeBSD-13.5-RELEASE-amd64-disc1.iso.xz'
+}
+
+static def defaultFreebsd14ImageUrl() {
+    return 'https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/14.4/FreeBSD-14.4-RELEASE-amd64-disc1.iso.xz'
+}
+
+static def extractFreebsdMajorFromDistName(String distName) {
+    def matcher = (distName ?: '') =~ /^freebsd(\d+)$/
+    return matcher.matches() ? matcher[0][1].toInteger() : null
+}
+
+static def extractFreebsdMajorFromImageUrl(String imageUrl) {
+    def matcher = (imageUrl ?: '') =~ /(?:^|[^0-9])(1[0-9])(?:\.[0-9]+)?-RELEASE/
+    return matcher.find() ? matcher.group(1).toInteger() : null
 }
 
 static def normalizeArchName(String input) {

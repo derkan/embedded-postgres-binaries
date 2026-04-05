@@ -107,13 +107,24 @@ For the FreeBSD 13 amd64 artifact:
 
 `./gradlew clean :custom-freebsd-platform:install -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd13`
 
-This build runs a FreeBSD guest inside QEMU from a Docker container. By default it uses the official FreeBSD `13.5-RELEASE` installer image and caches downloads under `.cache/freebsd-builder`.
+For the FreeBSD 14 amd64 artifact:
+
+`./gradlew clean :custom-freebsd-platform:install -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd14`
+
+These builds run a FreeBSD guest inside QEMU from a Docker container. By default:
+
+- `freebsd13` uses the official FreeBSD `13.5-RELEASE` installer image
+- `freebsd14` uses the official FreeBSD `14.4-RELEASE` installer image
+
+Downloads are cached under `.cache/freebsd-builder`.
 
 To override the FreeBSD installer image or cache directory:
 
 `./gradlew clean :custom-freebsd-platform:install -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd13 -PfreebsdImageUrl=https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/13.5/FreeBSD-13.5-RELEASE-amd64-disc1.iso.xz -PcacheDir=$PWD/.cache/freebsd-builder`
 
-The generated runtime archive is named `postgres-freebsd13-x86_64.txz` and the resulting jar artifact is named `embedded-postgres-binaries-freebsd13-amd64-<version>.jar`.
+`./gradlew clean :custom-freebsd-platform:install -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd14 -PfreebsdImageUrl=https://download.freebsd.org/releases/amd64/amd64/ISO-IMAGES/14.4/FreeBSD-14.4-RELEASE-amd64-disc1.iso.xz -PcacheDir=$PWD/.cache/freebsd-builder`
+
+The generated runtime archive is named `postgres-freebsd13-x86_64.txz` or `postgres-freebsd14-x86_64.txz`, and the resulting jar artifact is named `embedded-postgres-binaries-freebsd13-amd64-<version>.jar` or `embedded-postgres-binaries-freebsd14-amd64-<version>.jar`.
 
 Current FreeBSD runtime assumption:
 
@@ -122,13 +133,15 @@ Current FreeBSD runtime assumption:
 
 In other words, the current FreeBSD artifact is suitable for embedded PostgreSQL on a normal FreeBSD host, but it is not yet a fully self-contained ICU runtime.
 
-### Test the FreeBSD 13 artifact
+### Test the FreeBSD artifact
 
 After creating the jar, the FreeBSD smoke test can be run with:
 
 `./gradlew :custom-freebsd-platform:test -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd13`
 
-This smoke test boots a disposable FreeBSD `13.5` guest and verifies:
+`./gradlew :custom-freebsd-platform:test -Pversion=18.3.0 -PpgVersion=18.3 -PdistName=freebsd14`
+
+This smoke test boots a disposable FreeBSD guest for the requested major version and verifies:
 
 - `initdb`
 - `pg_ctl`
@@ -147,7 +160,7 @@ Optional parameters:
   - supported values: `amd64`, `i386`, `arm32v6`, `arm32v7`, `arm64v8`, `ppc64le`
 - *distName*
   - default value: debian-like distribution
-  - supported values: the default value, `alpine` or `freebsd13`
+  - supported values: the default value, `alpine`, `freebsd13` or `freebsd14`
 - *dockerImage*
   - default value: resolved based on the platform
   - supported values: any supported docker image

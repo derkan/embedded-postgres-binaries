@@ -254,11 +254,11 @@ EOF
 
         log "Copying embedded-postgres repo, bundle and guest helper"
         tar -C /usr/local/src -cf - embedded-postgres | ssh $SSH_OPTS root@127.0.0.1 "mkdir -p /var/tmp && tar -xf - -C /var/tmp"
-        scp $SCP_OPTS "/usr/local/pg-bundle/${BUNDLE_HOST_BASENAME}" root@127.0.0.1:/tmp/postgres-freebsd13-x86_64.txz
+        scp $SCP_OPTS "/usr/local/pg-bundle/${BUNDLE_HOST_BASENAME}" root@127.0.0.1:/tmp/"${BUNDLE_HOST_BASENAME}"
         scp $SCP_OPTS /usr/local/pg-scripts/test-embedded-postgres-freebsd-guest.sh root@127.0.0.1:/tmp/test-embedded-postgres-freebsd-guest.sh
 
         log "Running embedded-postgres examples inside FreeBSD guest"
-        ssh $SSH_OPTS root@127.0.0.1 "chmod +x /tmp/test-embedded-postgres-freebsd-guest.sh && env BUNDLE_FILE=/tmp/postgres-freebsd13-x86_64.txz REPO_DIR=/var/tmp/embedded-postgres /tmp/test-embedded-postgres-freebsd-guest.sh"
+        ssh $SSH_OPTS root@127.0.0.1 "chmod +x /tmp/test-embedded-postgres-freebsd-guest.sh && env BUNDLE_FILE=/tmp/${BUNDLE_HOST_BASENAME} REPO_DIR=/var/tmp/embedded-postgres /tmp/test-embedded-postgres-freebsd-guest.sh"
 
         log "embedded-postgres FreeBSD example test completed"
     '
