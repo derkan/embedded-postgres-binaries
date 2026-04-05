@@ -115,6 +115,13 @@ To override the FreeBSD installer image or cache directory:
 
 The generated runtime archive is named `postgres-freebsd13-x86_64.txz` and the resulting jar artifact is named `embedded-postgres-binaries-freebsd13-amd64-<version>.jar`.
 
+Current FreeBSD runtime assumption:
+
+- the bundled PostgreSQL binaries and shared libraries are packaged inside the artifact
+- ICU data is expected to be available using the standard FreeBSD layout under `/usr/local/share/icu`
+
+In other words, the current FreeBSD artifact is suitable for embedded PostgreSQL on a normal FreeBSD host, but it is not yet a fully self-contained ICU runtime.
+
 ### Test the FreeBSD 13 artifact
 
 After creating the jar, the FreeBSD smoke test can be run with:
