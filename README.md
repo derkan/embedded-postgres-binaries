@@ -55,10 +55,17 @@ Support for other architectures can be enabled by adding the corresponding Maven
 </dependency>
 ```
 
-**Supported platforms:** `Darwin`, `Windows`, `Linux`, `Alpine Linux`, `FreeBSD 13`  
+**Supported platforms:** `Darwin`, `Windows`, `Linux`, `Alpine Linux`, `FreeBSD 13`, `FreeBSD 14`  
 **Supported architectures:** `amd64`, `i386`, `arm32v6`, `arm32v7`, `arm64v8`, `ppc64le`
 
 Note that not all architectures are supported by all platforms, you can find an exhaustive list of all available artifacts here: https://mvnrepository.com/artifact/io.zonky.test.postgres
+
+FreeBSD runtime compatibility verified so far:
+
+- `freebsd13` artifact on FreeBSD `13.5`
+- `freebsd13` artifact on FreeBSD `14.4`
+- `freebsd14` artifact on FreeBSD `14.4`
+- `freebsd14` artifact on FreeBSD `15.0`
 
 ## Building from Source
 The project uses a [Gradle](http://gradle.org)-based build system. In the instructions
